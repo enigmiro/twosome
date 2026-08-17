@@ -72,6 +72,13 @@
   .gate-error{
     margin-top:12px; font-size:13px; color:#c0392b; display:none;
   }
+  .resume-note{
+    display:none;
+    background:#eaf2fb; border:1.5px solid var(--accent); border-radius:10px;
+    padding:11px 13px; font-size:12.5px; color:var(--accent); font-weight:700;
+    line-height:1.5; margin-bottom:18px;
+  }
+  .resume-note.show{ display:block; }
 
   /* ---------- 메인 화면 ---------- */
   #app{ position:fixed; inset:0; display:none; }
@@ -144,6 +151,8 @@
     <div class="gate-eyebrow">Small-group location share</div>
     <div class="gate-title">같이 어디 있는지<br>보여줄게</div>
     <div class="gate-sub">같은 방 코드를 아는 사람끼리만 서로 위치가 보여요. 방을 나가면 바로 사라집니다.</div>
+
+    <div id="resumeNote" class="resume-note"></div>
 
     <div class="field">
       <label for="nameInput">내 이름 (친구들에게 보여요)</label>
@@ -223,12 +232,42 @@
 
   const COLORS = ['#2b6cb0','#e0653a','#2f9e6e','#8e44ad','#c0392b','#16829a','#b8860b'];
   const STALE_MS = 2 * 60 * 1000;    // 2분 넘게 갱신 없으면 "자리비움" 표시
-  const PRUNE_MS = 30 * 60 * 1000;   // 30분 넘게 방치되면 자동 정리 (아무도 안 나갔을 때 대비)
+  const PRUNE_MS = 30 * 60 * 1000;   // 30분 넘게 방치되면 자동 정리
+  const MAX_ROOM_SIZE = 10;          // 방 하나당 최대 인원
+  const MAX_ACTIVE_ROOMS = 5;        // 동시에 열려 있을 수 있는 방(=사람이 있는 방) 최대 개수
+  const SESSION_KEY = 'locshare_session';
+
+  function saveSession(name, room, uid){
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ name, room, uid }));
+    } catch (e) { /* localStorage 사용 불가 환경이면 그냥 무시 */ }
+  }
+  function loadSession(){
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function clearSession(){
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  }
+
   function colorFor(id){
     let h = 0;
     for (let i=0;i<id.length;i++) h = (h*31 + id.charCodeAt(i)) >>> 0;
     return COLORS[h % COLORS.length];
   }
+
+  const resumeNote = $('resumeNote');
+
+  (function restoreFromSession(){
+    const s = loadSession();
+    if (!s || !s.room) return;
+    nameInput.value = s.name || '';
+    roomInput.value = s.room || '';
+    resumeNote.textContent = `이미 참여 중인 방: ${s.room} — 다시 시작하면 이어서 공유돼요.`;
+    resumeNote.classList.add('show');
+  })();
 
   function showError(msg){
     gateError.textContent = msg;
@@ -409,6 +448,7 @@
     if (presenceInterval) clearInterval(presenceInterval);
     if (myRef) myRef.remove();
     if (roomRef) roomRef.off();
+    clearSession();
     location.reload();
   }
 
@@ -429,15 +469,42 @@
     try {
       userName = name;
       roomCode = room;
-      userId = 'u_' + Math.random().toString(36).slice(2, 10);
+
+      initFirebase();
+
+      // 같은 이름 + 같은 방으로 재접속하는 거라면 이전 uid를 재사용한다.
+      // (그래야 인원수에 중복으로 잡히지 않고, 기존 마커/기록이 이어진다.)
+      const savedSession = loadSession();
+      userId = (savedSession && savedSession.room === roomCode && savedSession.name === userName)
+        ? savedSession.uid
+        : 'u_' + Math.random().toString(36).slice(2, 10);
+
+      // 방별 인원(10명) + 동시에 열려 있는 방 개수(5개) 확인
+      // 재접속(이미 있던 uid)은 인원수/방개수 제한에 걸리지 않는다.
+      const roomsSnap = await db.ref('rooms').once('value');
+      const roomsData = roomsSnap.val() || {};
+      const roomExists = Object.prototype.hasOwnProperty.call(roomsData, roomCode);
+      const existingUsers = (roomExists && roomsData[roomCode].users) || {};
+      const isRejoin = Object.prototype.hasOwnProperty.call(existingUsers, userId);
+
+      if (!roomExists) {
+        // 새로 만드는 방이라면, 현재 이미 열려 있는(사람이 있는) 방 개수부터 확인한다.
+        const activeRoomCount = Object.keys(roomsData).length;
+        if (activeRoomCount >= MAX_ACTIVE_ROOMS) {
+          throw new Error(`현재 동시에 열려 있는 방이 ${MAX_ACTIVE_ROOMS}개라 새 방을 만들 수 없습니다. 기존 방에 참여하거나 잠시 후 다시 시도해주세요.`);
+        }
+      } else if (!isRejoin && Object.keys(existingUsers).length >= MAX_ROOM_SIZE) {
+        throw new Error(`이 방은 이미 ${MAX_ROOM_SIZE}명이 가득 찼습니다. 다른 방 코드를 사용해주세요.`);
+      }
 
       await loadKakaoSdk();
-      initFirebase();
 
       myRef = db.ref('rooms/' + roomCode + '/users/' + userId);
       // 주의: onDisconnect().remove()를 걸지 않는다.
       // 뒤로가기/탭 닫기/네트워크 순단으로 인한 자동 이탈을 막고,
       // 오직 명시적인 "나가기" 버튼을 눌렀을 때만 위치 공유가 끝나게 한다.
+
+      saveSession(userName, roomCode, userId);
 
       gate.style.display = 'none';
       app.style.display = 'block';
