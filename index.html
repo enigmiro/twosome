@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>같이 어디 — 친구 위치 공유</title>
+<style>
+  :root{
+    --ink:#1b1f23;
+    --paper:#f6f5f1;
+    --line:#dcd8cf;
+    --accent:#2b6cb0;
+    --accent2:#e0653a;
+    --ok:#2f9e6e;
+    --muted:#8a8578;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",-apple-system,sans-serif;
+    background:var(--paper);
+    color:var(--ink);
+    overflow:hidden;
+  }
+
+  /* ---------- 진입 화면 ---------- */
+  #gate{
+    position:fixed; inset:0; z-index:50;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--paper);
+    padding:24px;
+  }
+  .gate-card{
+    width:100%; max-width:360px;
+  }
+  .gate-eyebrow{
+    font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent2); font-weight:700; margin-bottom:10px;
+  }
+  .gate-title{
+    font-size:30px; font-weight:800; line-height:1.25; letter-spacing:-.01em;
+    margin-bottom:8px;
+  }
+  .gate-sub{
+    font-size:14px; color:var(--muted); line-height:1.6; margin-bottom:28px;
+  }
+  .field{ margin-bottom:14px; }
+  .field label{
+    display:block; font-size:12px; font-weight:700; color:var(--ink);
+    margin-bottom:6px;
+  }
+  .field input{
+    width:100%; padding:13px 14px; font-size:15px;
+    border:1.5px solid var(--line); border-radius:10px;
+    background:#fff; color:var(--ink); outline:none;
+    transition:border-color .15s ease;
+  }
+  .field input:focus{ border-color:var(--accent); }
+  .field-row{ display:flex; gap:8px; }
+  .field-row .field{ flex:1; }
+  #joinBtn{
+    width:100%; padding:14px; margin-top:6px;
+    background:var(--ink); color:#fff; border:none; border-radius:10px;
+    font-size:15px; font-weight:700; cursor:pointer;
+    transition:transform .1s ease, opacity .1s ease;
+  }
+  #joinBtn:active{ transform:scale(.98); }
+  #joinBtn:disabled{ opacity:.45; cursor:default; }
+  .gate-note{
+    margin-top:16px; font-size:12px; color:var(--muted); line-height:1.6;
+  }
+  .gate-error{
+    margin-top:12px; font-size:13px; color:#c0392b; display:none;
+  }
+
+  /* ---------- 메인 화면 ---------- */
+  #app{ position:fixed; inset:0; display:none; }
+  #map{ position:absolute; inset:0; }
+
+  #topbar{
+    position:absolute; top:0; left:0; right:0; z-index:10;
+    padding:14px 16px;
+    background:linear-gradient(to bottom, rgba(246,245,241,.96), rgba(246,245,241,0));
+    display:flex; align-items:center; justify-content:space-between;
+    pointer-events:none;
+  }
+  #topbar .room-chip{
+    pointer-events:auto;
+    background:#fff; border:1.5px solid var(--line); border-radius:999px;
+    padding:8px 14px; font-size:13px; font-weight:700;
+    display:flex; align-items:center; gap:8px;
+    box-shadow:0 2px 8px rgba(0,0,0,.06);
+  }
+  #topbar .room-chip .dot{
+    width:7px; height:7px; border-radius:50%; background:var(--ok);
+    box-shadow:0 0 0 3px rgba(47,158,110,.18);
+  }
+  #leaveBtn{
+    pointer-events:auto;
+    background:#fff; border:1.5px solid var(--line); border-radius:999px;
+    width:36px; height:36px; font-size:15px; cursor:pointer;
+    box-shadow:0 2px 8px rgba(0,0,0,.06);
+  }
+
+  #peoplebar{
+    position:absolute; bottom:0; left:0; right:0; z-index:10;
+    padding:14px 12px calc(14px + env(safe-area-inset-bottom));
+    background:linear-gradient(to top, rgba(246,245,241,.98), rgba(246,245,241,0));
+  }
+  #peoplelist{
+    display:flex; gap:8px; overflow-x:auto; padding-bottom:2px;
+  }
+  .pchip{
+    flex:0 0 auto;
+    background:#fff; border:1.5px solid var(--line); border-radius:12px;
+    padding:8px 12px; min-width:88px;
+    display:flex; flex-direction:column; gap:2px;
+    box-shadow:0 2px 8px rgba(0,0,0,.05);
+  }
+  .pchip .pname{ font-size:13px; font-weight:700; display:flex; align-items:center; gap:6px;}
+  .pchip .pname .swatch{ width:9px; height:9px; border-radius:50%; flex:0 0 auto;}
+  .pchip .ptime{ font-size:11px; color:var(--muted); }
+  .pchip.me{ border-color:var(--accent); background:#eaf2fb; }
+
+  #status{
+    position:absolute; top:64px; left:16px; right:16px; z-index:9;
+    text-align:center; font-size:12.5px; color:var(--muted);
+    pointer-events:none;
+  }
+
+  .kakao-label{
+    font-size:11.5px; font-weight:700; white-space:nowrap;
+    background:#fff; border-radius:6px; padding:2px 6px;
+    box-shadow:0 1px 4px rgba(0,0,0,.15);
+    transform:translateY(-6px);
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 진입 화면: 이름 + 방 코드 ============ -->
+<div id="gate">
+  <div class="gate-card">
+    <div class="gate-eyebrow">Small-group location share</div>
+    <div class="gate-title">같이 어디 있는지<br>보여줄게</div>
+    <div class="gate-sub">같은 방 코드를 아는 사람끼리만 서로 위치가 보여요. 방을 나가면 바로 사라집니다.</div>
+
+    <div class="field">
+      <label for="nameInput">내 이름 (친구들에게 보여요)</label>
+      <input id="nameInput" type="text" maxlength="10" placeholder="예: 민준" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="roomInput">방 코드</label>
+      <input id="roomInput" type="text" maxlength="20" placeholder="예: 홍대모임0817" autocomplete="off">
+    </div>
+
+    <button id="joinBtn">위치 공유 시작</button>
+    <div id="gateError" class="gate-error"></div>
+    <div class="gate-note">시작하면 브라우저가 위치 접근 권한을 물어봅니다. 허용해야 지도에 표시돼요.</div>
+  </div>
+</div>
+
+<!-- ============ 메인 화면: 지도 ============ -->
+<div id="app">
+  <div id="map"></div>
+  <div id="status"></div>
+
+  <div id="topbar">
+    <div class="room-chip"><span class="dot"></span><span id="roomLabel"></span></div>
+    <button id="leaveBtn" title="방 나가기">✕</button>
+  </div>
+
+  <div id="peoplebar">
+    <div id="peoplelist"></div>
+  </div>
+</div>
+
+<!--
+  ====================================================================
+  설정: 아래 두 곳에 본인 키를 넣어야 실제로 동작합니다.
+  1) KAKAO_APP_KEY   : https://developers.kakao.com 에서 발급받은 JavaScript 키
+  2) FIREBASE_CONFIG  : https://console.firebase.google.com 에서 프로젝트 생성 후
+                         Realtime Database 활성화 → 프로젝트 설정에서 config 복사
+  ====================================================================
+-->
+<script>
+  const KAKAO_APP_KEY = "9e0f43a31de8841e8977d1efaa8d24c9";
+
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDRI8Xo84wcbtYJT2qRAT-yuEdGLzVxANg",
+    authDomain: "twosome-4b488.firebaseapp.com",
+    databaseURL: "https://twosome-4b488-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "twosome-4b488",
+  };
+</script>
+
+<!-- Firebase (Realtime Database만 사용, 별도 서버 불필요) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<!-- 카카오맵 SDK -->
+<script id="kakaoSdk"></script>
+
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const nameInput = $('nameInput');
+  const roomInput = $('roomInput');
+  const joinBtn = $('joinBtn');
+  const gateError = $('gateError');
+  const gate = $('gate');
+  const app = $('app');
+  const statusEl = $('status');
+  const roomLabel = $('roomLabel');
+  const peoplelist = $('peoplelist');
+  const leaveBtn = $('leaveBtn');
+
+  let map, myMarker, kakao;
+  let markers = {};   // userId -> {marker, overlay}
+  let watchId = null;
+  let userId = null, userName = null, roomCode = null;
+  let db, roomRef, myRef, presenceInterval;
+
+  const COLORS = ['#2b6cb0','#e0653a','#2f9e6e','#8e44ad','#c0392b','#16829a','#b8860b'];
+  function colorFor(id){
+    let h = 0;
+    for (let i=0;i<id.length;i++) h = (h*31 + id.charCodeAt(i)) >>> 0;
+    return COLORS[h % COLORS.length];
+  }
+
+  function showError(msg){
+    gateError.textContent = msg;
+    gateError.style.display = 'block';
+  }
+
+  function loadKakaoSdk(){
+    return new Promise((resolve, reject) => {
+      if (window.kakao && window.kakao.maps) return resolve();
+      const s = document.getElementById('kakaoSdk');
+      s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APP_KEY}&autoload=false`;
+      s.onload = () => window.kakao.maps.load(resolve);
+      s.onerror = () => reject(new Error('카카오맵 SDK 로드 실패 — 키를 확인하세요.'));
+      document.head.appendChild(s);
+    });
+  }
+
+  function initFirebase(){
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.database();
+  }
+
+  function initMap(lat, lng){
+    kakao = window.kakao;
+    map = new kakao.maps.Map($('map'), {
+      center: new kakao.maps.LatLng(lat, lng),
+      level: 4
+    });
+    map.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
+  }
+
+  function upsertMarker(uid, name, lat, lng, isMe){
+    const pos = new kakao.maps.LatLng(lat, lng);
+    const color = isMe ? '#111' : colorFor(uid);
+
+    if (!markers[uid]) {
+      const content = document.createElement('div');
+      content.style.display = 'flex';
+      content.style.flexDirection = 'column';
+      content.style.alignItems = 'center';
+      content.innerHTML = `
+        <div class="kakao-label" style="color:${color}">${isMe ? '나' : escapeHtml(name)}</div>
+        <div style="width:16px;height:16px;border-radius:50%;background:${color};
+                    border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);"></div>
+      `;
+      const overlay = new kakao.maps.CustomOverlay({
+        position: pos, content, yAnchor: 1, zIndex: isMe ? 20 : 10
+      });
+      overlay.setMap(map);
+      markers[uid] = { overlay };
+    } else {
+      markers[uid].overlay.setPosition(pos);
+    }
+  }
+
+  function removeMarker(uid){
+    if (markers[uid]) {
+      markers[uid].overlay.setMap(null);
+      delete markers[uid];
+    }
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function timeAgo(ts){
+    const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (diff < 5) return '방금';
+    if (diff < 60) return diff + '초 전';
+    return Math.floor(diff/60) + '분 전';
+  }
+
+  function renderPeopleList(users){
+    peoplelist.innerHTML = '';
+    const entries = Object.entries(users || {}).sort((a,b) => (a[0]===userId?-1:0) - (b[0]===userId?-1:0));
+    for (const [uid, u] of entries) {
+      const chip = document.createElement('div');
+      chip.className = 'pchip' + (uid === userId ? ' me' : '');
+      const color = uid === userId ? '#111' : colorFor(uid);
+      chip.innerHTML = `
+        <div class="pname"><span class="swatch" style="background:${color}"></span>${escapeHtml(u.name)}${uid===userId?' (나)':''}</div>
+        <div class="ptime">${timeAgo(u.ts)}</div>
+      `;
+      peoplelist.appendChild(chip);
+    }
+  }
+
+  function startWatchingRoom(){
+    roomRef = db.ref('rooms/' + roomCode + '/users');
+    roomRef.on('value', (snap) => {
+      const users = snap.val() || {};
+      renderPeopleList(users);
+
+      // 지도에 반영
+      for (const [uid, u] of Object.entries(users)) {
+        if (!u.lat || !u.lng) continue;
+        upsertMarker(uid, u.name, u.lat, u.lng, uid === userId);
+      }
+      // 나간 사람 마커 제거
+      for (const uid of Object.keys(markers)) {
+        if (!users[uid]) removeMarker(uid);
+      }
+    });
+
+    // 30초 넘게 갱신 없는 유저는 자동 정리 표시용 타이머
+    presenceInterval = setInterval(() => {
+      roomRef.once('value').then(snap => renderPeopleList(snap.val() || {}));
+    }, 15000);
+  }
+
+  function startWatchingMyLocation(){
+    if (!navigator.geolocation) {
+      statusEl.textContent = '이 브라우저는 위치 정보를 지원하지 않습니다.';
+      return;
+    }
+    statusEl.textContent = '내 위치를 찾는 중...';
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        statusEl.textContent = '';
+        if (!map) initMap(latitude, longitude);
+        map.setCenter(new kakao.maps.LatLng(latitude, longitude));
+
+        myRef.set({
+          name: userName,
+          lat: latitude,
+          lng: longitude,
+          ts: firebase.database.ServerValue.TIMESTAMP
+        });
+      },
+      (err) => {
+        statusEl.textContent = '위치 접근이 거부되었습니다. 브라우저 설정에서 위치 권한을 허용해주세요.';
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+    );
+  }
+
+  function leaveRoom(){
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    if (presenceInterval) clearInterval(presenceInterval);
+    if (myRef) myRef.remove();
+    if (roomRef) roomRef.off();
+    location.reload();
+  }
+
+  joinBtn.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    const room = roomInput.value.trim();
+    gateError.style.display = 'none';
+
+    if (!name) return showError('이름을 입력해주세요.');
+    if (!room) return showError('방 코드를 입력해주세요.');
+    if (KAKAO_APP_KEY.includes('여기에') || FIREBASE_CONFIG.apiKey.includes('여기에')) {
+      return showError('아직 카카오맵 / Firebase 키가 설정되지 않았습니다. 코드 상단의 설정값을 채워주세요.');
+    }
+
+    joinBtn.disabled = true;
+    joinBtn.textContent = '연결 중...';
+
+    try {
+      userName = name;
+      roomCode = room;
+      userId = 'u_' + Math.random().toString(36).slice(2, 10);
+
+      await loadKakaoSdk();
+      initFirebase();
+
+      myRef = db.ref('rooms/' + roomCode + '/users/' + userId);
+      myRef.onDisconnect().remove();
+
+      gate.style.display = 'none';
+      app.style.display = 'block';
+      roomLabel.textContent = roomCode;
+
+      startWatchingRoom();
+      startWatchingMyLocation();
+    } catch (e) {
+      showError(e.message || '연결에 실패했습니다.');
+      joinBtn.disabled = false;
+      joinBtn.textContent = '위치 공유 시작';
+    }
+  });
+
+  leaveBtn.addEventListener('click', () => {
+    if (confirm('방을 나가시겠어요? 내 위치 공유가 즉시 중단됩니다.')) leaveRoom();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (myRef) myRef.remove();
+  });
+})();
+</script>
+</body>
+</html>
