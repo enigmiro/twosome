@@ -222,6 +222,8 @@
   let db, roomRef, myRef, presenceInterval;
 
   const COLORS = ['#2b6cb0','#e0653a','#2f9e6e','#8e44ad','#c0392b','#16829a','#b8860b'];
+  const STALE_MS = 2 * 60 * 1000;    // 2분 넘게 갱신 없으면 "자리비움" 표시
+  const PRUNE_MS = 30 * 60 * 1000;   // 30분 넘게 방치되면 자동 정리 (아무도 안 나갔을 때 대비)
   function colorFor(id){
     let h = 0;
     for (let i=0;i<id.length;i++) h = (h*31 + id.charCodeAt(i)) >>> 0;
@@ -270,17 +272,20 @@
     map.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
   }
 
-  function upsertMarker(uid, name, lat, lng, isMe){
+  function upsertMarker(uid, name, lat, lng, isMe, isStale){
     const pos = new kakao.maps.LatLng(lat, lng);
     const color = isMe ? '#111' : colorFor(uid);
+    const opacity = isStale ? 0.4 : 1;
+    const label = isMe ? '나' : escapeHtml(name) + (isStale ? ' · 자리비움' : '');
 
     if (!markers[uid]) {
       const content = document.createElement('div');
       content.style.display = 'flex';
       content.style.flexDirection = 'column';
       content.style.alignItems = 'center';
+      content.style.opacity = opacity;
       content.innerHTML = `
-        <div class="kakao-label" style="color:${color}">${isMe ? '나' : escapeHtml(name)}</div>
+        <div class="kakao-label" style="color:${color}">${label}</div>
         <div style="width:16px;height:16px;border-radius:50%;background:${color};
                     border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);"></div>
       `;
@@ -288,9 +293,12 @@
         position: pos, content, yAnchor: 1, zIndex: isMe ? 20 : 10
       });
       overlay.setMap(map);
-      markers[uid] = { overlay };
+      markers[uid] = { overlay, content };
     } else {
       markers[uid].overlay.setPosition(pos);
+      markers[uid].content.style.opacity = opacity;
+      const labelEl = markers[uid].content.querySelector('.kakao-label');
+      if (labelEl) labelEl.textContent = label;
     }
   }
 
@@ -316,12 +324,14 @@
     peoplelist.innerHTML = '';
     const entries = Object.entries(users || {}).sort((a,b) => (a[0]===userId?-1:0) - (b[0]===userId?-1:0));
     for (const [uid, u] of entries) {
+      const isStale = (Date.now() - (u.ts || 0)) > STALE_MS;
       const chip = document.createElement('div');
       chip.className = 'pchip' + (uid === userId ? ' me' : '');
+      if (isStale) chip.style.opacity = '0.5';
       const color = uid === userId ? '#111' : colorFor(uid);
       chip.innerHTML = `
         <div class="pname"><span class="swatch" style="background:${color}"></span>${escapeHtml(u.name)}${uid===userId?' (나)':''}</div>
-        <div class="ptime">${timeAgo(u.ts)}</div>
+        <div class="ptime">${isStale ? '자리비움 · ' : ''}${timeAgo(u.ts)}</div>
       `;
       peoplelist.appendChild(chip);
     }
@@ -333,20 +343,37 @@
       const users = snap.val() || {};
       renderPeopleList(users);
 
-      // 지도에 반영
+      // 지도에 반영 (오래 갱신 없는 사람은 흐릿하게 "자리비움" 표시)
       for (const [uid, u] of Object.entries(users)) {
         if (!u.lat || !u.lng) continue;
-        upsertMarker(uid, u.name, u.lat, u.lng, uid === userId);
+        const isStale = (Date.now() - (u.ts || 0)) > STALE_MS;
+        upsertMarker(uid, u.name, u.lat, u.lng, uid === userId, isStale);
       }
-      // 나간 사람 마커 제거
+      // 나간 사람(방 나가기 버튼으로 명시적으로 지운 사람) 마커 제거
       for (const uid of Object.keys(markers)) {
         if (!users[uid]) removeMarker(uid);
       }
+
+      // 30분 넘게 방치된 유령 데이터는 정리한다.
+      // (본인 것만 지워서 여러 클라이언트가 동시에 지우려다 충돌하는 걸 피한다.
+      //  다른 사람 것도 방치돼 있으면, 그 사람이 다시 들어오거나
+      //  누군가 명시적으로 나가기 전까지는 흐릿한 상태로 남는다.)
+      if (users[userId] && (Date.now() - (users[userId].ts || 0)) > PRUNE_MS && !watchId) {
+        myRef.remove();
+      }
     });
 
-    // 30초 넘게 갱신 없는 유저는 자동 정리 표시용 타이머
+    // 자리비움/시간 표시를 주기적으로 갱신
     presenceInterval = setInterval(() => {
-      roomRef.once('value').then(snap => renderPeopleList(snap.val() || {}));
+      roomRef.once('value').then(snap => {
+        const users = snap.val() || {};
+        renderPeopleList(users);
+        for (const [uid, u] of Object.entries(users)) {
+          if (!u.lat || !u.lng) continue;
+          const isStale = (Date.now() - (u.ts || 0)) > STALE_MS;
+          upsertMarker(uid, u.name, u.lat, u.lng, uid === userId, isStale);
+        }
+      });
     }, 15000);
   }
 
@@ -408,7 +435,9 @@
       initFirebase();
 
       myRef = db.ref('rooms/' + roomCode + '/users/' + userId);
-      myRef.onDisconnect().remove();
+      // 주의: onDisconnect().remove()를 걸지 않는다.
+      // 뒤로가기/탭 닫기/네트워크 순단으로 인한 자동 이탈을 막고,
+      // 오직 명시적인 "나가기" 버튼을 눌렀을 때만 위치 공유가 끝나게 한다.
 
       gate.style.display = 'none';
       app.style.display = 'block';
@@ -427,9 +456,8 @@
     if (confirm('방을 나가시겠어요? 내 위치 공유가 즉시 중단됩니다.')) leaveRoom();
   });
 
-  window.addEventListener('beforeunload', () => {
-    if (myRef) myRef.remove();
-  });
+  // 뒤로가기/탭 닫기 시 자동으로 방을 나가지 않는다.
+  // 명시적으로 "나가기"(✕) 버튼을 눌러야만 위치 공유가 종료된다.
 })();
 </script>
 </body>
